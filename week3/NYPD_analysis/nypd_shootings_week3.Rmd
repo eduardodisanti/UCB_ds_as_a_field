@@ -1,0 +1,345 @@
+---
+title: "NYPD shooting analysis, modelization and bias study"
+output:
+  pdf_document: default
+  html_document: default
+date: "`r Sys.Date()`"
+---
+
+```{r setup, include=FALSE}
+# Set default options to hide warnings, messages, and excessive output
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+ 
+# Load libraries
+suppressPackageStartupMessages({
+    library(readr)
+    library(stringr)
+    library(tidyverse)
+    library(lubridate)
+    library(kableExtra)
+    library(patchwork)
+    library(ggthemes)  
+    library(viridis)
+    library(tidymodels)  # PIPELINE
+    library(ranger)      # MODELIZATION
+    library(vip)         # FEATURE IMPORTANCE
+})
+```
+
+## NYPD shooting analysis
+
+This document describes the work done on NYPD shooting cases dataset for CU Boulder MDS 2025
+
+This work tries to answer the following research questions:
+
+-   When the shootings happens, which may lead to some correlation with the time.
+
+-   Is there any potential bias in the data
+
+-   It is safe using machine learning on this dataset
+
+-   Its safe to use machine learning to estimate when a possible perpetrator is guilty
+
+### Datasources
+
+Data comes from following repository: "<https://data.cityofnewyork.us>\>"
+
+File is:
+
+-   **New York shooting cases:** "<https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD>"
+
+    **From the NYPD description:**\
+    *This is a breakdown of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year. This data is manually extracted every quarter and reviewed by the Office of Management Analysis and Planning before being posted on the NYPD website. Each record represents a shooting incident in NYC and includes information about the event, the location and time of occurrence. In addition, information related to suspect and victim demographics is also included. This data can be used by the public to explore the nature of shooting/criminal activity.* \
+    <https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic>
+
+```{r data_load, echo=TRUE, warning=FALSE}
+
+url <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+
+nypd_shootings <- read_csv(url, show_col_types = FALSE)
+
+# Check structure of dataset
+glimpse(nypd_shootings)
+```
+
+## Data pre-process
+
+```{r pre_proc, echo=FALSE}
+### TRANSFORM THE COLUMN TYPES
+### ADD WEEK DAY
+### KEEP ONLY THE COLUMNS I WANT
+nypd_shootings <- nypd_shootings %>%
+  select(OCCUR_DATE, OCCUR_TIME, PRECINCT, PERP_SEX, PERP_AGE_GROUP, PERP_RACE, VIC_SEX, VIC_AGE_GROUP, VIC_RACE) %>%
+  mutate(
+    OCCUR_DATE = as.Date(OCCUR_DATE, format="%m/%d/%Y"),       # Convert date to proper format
+    OCCUR_TIME = hms::as_hms(OCCUR_TIME),                      # Convert time to hms format
+    HOUR = hour(OCCUR_TIME),                                   # Extract the time and ensure 24-hour format
+    DAY_OF_WEEK = weekdays(OCCUR_DATE)                         # Extract the day from the week
+  )
+
+```
+
+### DATA AGGREGATION
+
+```{r pre_proc_data_aggregation, echo=FALSE}
+### CREATES A SHOOTINGS PER DAY TABLE
+shootings_per_day <- nypd_shootings %>%
+  group_by(OCCUR_DATE, DAY_OF_WEEK) %>%
+  summarise(shooting_count = n(), .groups = "drop")
+
+### CREATES A SHOOTINGS BY WEEKDAY TABLE
+shootings_per_weekday <- nypd_shootings %>%
+  mutate(DAY_OF_WEEK = weekdays(OCCUR_DATE)) %>%  # Extract the day of the week
+  group_by(DAY_OF_WEEK) %>%
+  summarise(shooting_count = n(), .groups = "drop")  # Count total shootings per weekday
+
+shootings_per_weekday$DAY_OF_WEEK <- factor(shootings_per_weekday$DAY_OF_WEEK, 
+                                           levels = c("Monday", "Tuesday", "Wednesday", 
+                                                      "Thursday", "Friday", "Saturday", "Sunday"))
+
+### CREATE SHOOTING BY TIME ###
+shootings_per_time <- nypd_shootings %>%
+  group_by(DAY_OF_WEEK, HOUR) %>%
+  summarise(shooting_count = n(), .groups = "drop")  # Count shootings per hour per weekday
+
+# Convert weekdays to ordered factor (Monday → Sunday)
+shootings_per_time$DAY_OF_WEEK <- factor(shootings_per_time$DAY_OF_WEEK, 
+                                        levels = c("Monday", "Tuesday", "Wednesday", 
+                                                   "Thursday", "Friday", "Saturday", "Sunday"))
+```
+
+### PLOT THE TRAJECTORY OF THE SHOOTINGS ALONG TIME
+
+```{r plot_shootings_trajectory, echo=FALSE, fig.align='center', fig.width=6, fig.height=4}
+  ggplot(shootings_per_day, aes(x = OCCUR_DATE, y = shooting_count)) +
+    geom_line(color = "blue", size = 1) +
+    labs(title = "Daily Shootings in NYC (Separated by Day of the Week)",
+         x = "Date",
+         y = "Number of Shootings") +
+    theme_minimal()
+  
+```
+
+### PLOT THE TRAJECTORY OF THE SHOOTINGS BY WEEKDAY BECAUSE THE TREND IS NOT CLEAR
+
+```{r plot_shootings_trajectory_per_weekday, echo=FALSE,fig.align='center', fig.width=6, fig.height=4}
+  ggplot(shootings_per_day, aes(x = OCCUR_DATE, y = shooting_count)) +
+    geom_point(color = "blue", size = 1) +
+    facet_wrap(~ DAY_OF_WEEK, ncol = 2) +  # Separate graphs per weekday
+    labs(title = "Daily Shootings in NYC (Separated by Day of the Week)",
+         x = "Date",
+         y = "Number of Shootings") +
+    theme_minimal()
+  
+```
+
+### PLOT THE DISTRUBUTION PER WEEK DAY TO UNDERSTAND IF ITS SOME PATTERN THERE
+
+```{r plot_weekday_distribution_trajectory, echo=FALSE, fig.align='center', fig.width=6, fig.height=4}
+scatter_plot <- ggplot(shootings_per_weekday, aes(x = DAY_OF_WEEK, y = shooting_count)) +
+  geom_point(color = "blue", size = 4, alpha = 1) +  # Scatter points
+  labs(title = "Shootings by Day of the Week in NYC",
+       x = "Day of the Week",
+       y = "Number of Shootings") +
+  theme_minimal()
+
+# I'm interested in the variability per day
+box_plot <- ggplot(shootings_per_day, aes(x = DAY_OF_WEEK, y = shooting_count)) +
+  geom_boxplot(fill = "skyblue", alpha = 0.6) +
+  labs(title = "Distribution of Daily Shootings per Weekday",
+       x = "Day of the Week",
+       y = "Number of Shootings per Day") +
+  theme_minimal()
+
+scatter_plot + box_plot + plot_layout(ncol = 2)
+```
+
+Its a clear pattern on the weekends, more shoots.\
+**There are more shootings during the weekends**.\
+Also, the boxplot confirms the scatter and my insight is: v**iolent crime increases on weekends**
+
+Indicators:
+
+-   Higher medians
+
+-   More variability (more outliers and wider boxes)
+
+-   During the weekdays, the shooting number is more stable but occurs
+
+Observation:
+
+Friday and Monday also shows more shootings which is consistent with the weekend proximity.
+
+Hypothesis: Most of the shootings happens because of nightlife, to test it I'll:
+
+-   Plot the scatter day of week vs time of the shooting being the size of the marker the shooting count.
+
+-   This should show a clear pattern on the night during weekends and also Friday.
+
+\
+
+```{r plot_preccint_distribution_trajectory, echo=FALSE, fig.align='center', fig.width=6, fig.height=4}
+  ggplot(shootings_per_time, aes(x = DAY_OF_WEEK, y = HOUR, size = shooting_count, color = shooting_count)) +
+    geom_point(alpha = 0.9) +
+    scale_size(range = c(2, 12)) +
+    scale_color_viridis_c(option = "magma", direction = -1) +
+    scale_y_continuous(breaks = seq(0, 23, 2)) +  # Label every 2 hours
+    scale_size(range = c(2, 10)) + 
+    labs(title = "Shootings by Day of the Week and Time",
+         x = "Day of the Week",
+         y = "Hour of the Day",
+         size  = "Shooting Count",
+         color = "Shooting Count",
+         ) +
+    theme_minimal()
+```
+
+Insight: The crimes happens moslty during weekend during the night. Its associated with nightlife.\
+Future work: Check **where (using location)** the shootings happens the most to see if its close to bars.\
+This can help the police to search for dangerous places.\
+
+### POSSIBLE BIASES
+
+As is a sensitive topic, its important to understand the potential risk of bias. For identifying them I'll:
+
+-   Train an explainable model using all the features when the perpetrator is identified
+
+-   Explain the values of the features that contribute the most.
+
+This should show the potential biases if only this dataset is used for training.
+
+#### Modelization
+
+I'll train a Random Forest, the split will be 70% training and 30% test
+
+```{r modelization}
+### FEATURE SELECTION AND REMOVE ALL NANs
+    crime_data <- nypd_shootings %>%
+      select(PRECINCT, OCCUR_TIME, PERP_SEX, PERP_AGE_GROUP, PERP_RACE, VIC_SEX, VIC_AGE_GROUP, VIC_RACE) %>%
+      drop_na()
+    
+### TRANSFORM THE CATEGORICAL VARIABLES INTO TRAINABLE ONES
+  crime_data <- crime_data %>%
+  mutate(across(c(PRECINCT, PERP_SEX, PERP_AGE_GROUP, PERP_RACE, VIC_SEX, VIC_AGE_GROUP, VIC_RACE), as.factor))
+
+### SPLIT THE DATASET
+  set.seed(123)
+  crime_split <- initial_split(crime_data, prop = 0.70)
+  crime_train <- training(crime_split)
+  crime_test <- testing(crime_split)
+
+### TRAIN THE RANDOM FOREST
+  model <- rand_forest(mode = "classification") %>%
+    set_engine("ranger", importance="permutation") %>%
+    fit(PRECINCT ~ ., data = crime_train)
+
+```
+
+#### SHOW FEATURE IMPORTANCE TO IDENTIFY THE BIASES
+
+```{r feature_importance, fig.align='center', fig.width=6, fig.height=4}
+vip(model)
+```
+
+#### MODEL CORRECTION TO IDENTIFY BIASES
+
+-   We already estabilshed that the time its important, but not useful to confirm the bias that its appearing (RACE and PERPETRATOR age group)
+
+    ```{r bias_identification_model_correction, fig.align='center', fig.width=6, fig.height=4}
+
+    ### FEATURE SELECTION AND REMOVE ALL NANs
+        crime_data <- nypd_shootings %>%
+          select(PRECINCT, PERP_SEX, PERP_AGE_GROUP, PERP_RACE, VIC_SEX, VIC_AGE_GROUP, VIC_RACE) %>%
+          drop_na()
+        
+    ### TRANSFORM THE CATEGORICAL VARIABLES INTO TRAINABLE ONES
+      crime_data <- crime_data %>%
+      mutate(across(c(PRECINCT, PERP_SEX, PERP_AGE_GROUP, PERP_RACE, VIC_SEX, VIC_AGE_GROUP, VIC_RACE), as.factor))
+
+    ### SPLIT THE DATASET
+      set.seed(123)
+      crime_split <- initial_split(crime_data, prop = 0.70)
+      crime_train <- training(crime_split)
+      crime_test <- testing(crime_split)
+
+    ### TRAIN THE RANDOM FOREST
+      corrected_model <- rand_forest(mode = "classification") %>%
+        set_engine("ranger", importance="permutation") %>%
+        fit(PRECINCT ~ ., data = crime_train)
+    ```
+
+#### CORRECTED FEATURE IMPORTANCE
+
+```{r corrected_feature_importance, fig.align='center', fig.width=6, fig.height=4}
+vip(corrected_model)
+```
+
+### CHECK PERPETRATOR RACE SHOOTINGS DISTRIBUTION
+
+```{r explain_bias_by_race_distribution, echo=FALSE, fig.align='center', fig.width=6, fig.height=4}
+### AGGREGATE BY PERPETRATOR RACE WHEN ITS KNOW (NOT NA) ###
+shootings_by_perpetrator_race <- nypd_shootings %>%
+  filter(!is.na(PERP_RACE)) %>%
+  group_by(PERP_RACE) %>%
+  summarise(shooting_count = n(), .groups = "drop") %>%
+  arrange(desc(shooting_count))
+
+ggplot(shootings_by_perpetrator_race, aes(x = reorder(factor(PERP_RACE), shooting_count), y = shooting_count, fill = shooting_count)) +
+  geom_bar(stat = "identity") +
+  scale_fill_gradient(low = "lightblue", high = "darkred") +  # Color gradient for impact
+  labs(title = "Perpetrator race int the dataset for Shootings in NYC",
+       x = "Precinct",
+       y = "Total Shootings") +
+  theme_minimal() +
+  coord_flip() 
+```
+
+#### FINALLY LETS BRIEFLY ANALYZE THE RELATIONSHIP BETWEEN PERPETRATOR RACE AND VICTIM RACE
+
+```{r race_to_race_shootings, echo=FALSE, fig.align='center', fig.width=6, fig.height=4}
+shootings_by_race <- nypd_shootings %>%
+  filter(!is.na(PERP_RACE) & !is.na(VIC_RACE)) %>%  # Remove NA values
+  group_by(PERP_RACE, VIC_RACE) %>%
+  summarise(shooting_count = n(), .groups = "drop")
+
+  ggplot(shootings_by_race, aes(x = PERP_RACE, y = VIC_RACE, size = shooting_count, color = shooting_count)) +
+    geom_point(alpha = 0.8) +  # Add transparency
+    scale_size(range = c(2, 10)) +  # Adjust marker size range
+    scale_color_viridis_c() +  # Use viridis color scale for better readability
+    labs(
+      title = "Shootings by Perpetrator Race vs Victim Race",
+      x = "Perpetrator Race",
+      y = "Victim Race",
+      size = "Shooting Count",
+      color = "Shooting Count"
+    ) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## CONCLUSIONS
+
+-   There is an increase of shootings during the **weekends**
+
+-   Most of the crimes happens during the **night**
+
+-   Most of the shootings APPEARS to happen **between same race,** in this case BLACK, but **WARNING**\
+    THE DATA IS **NOT** **NORMALIZED** by population, therefore, ITS AN ERRPR TO CONCLUDE THAT THE ANY RACE COMMITS MORE CRIMES - if certain race is more abundant, then the dataset is biased.
+
+-   The dataset may be biased, therefore, the model **IS BIASED**
+
+-   This dataset cannot be used without normalization because:
+
+    -   Training a model with this dataset, as is, will lead to incorrect predictions, as will be enough to be black have a guilty tag.
+
+    -   Given that most of the crimes happens between same race (according to this dataset), its highly likely that if the accused is black the victim is also black, increasing the chances to be incorrectly accused.
+
+    -   If the perpetrator is an American Indian or Alaskan Native and guilty, your chances to get free are very high
+
+-   Even if the model is normalized, **there is still posibility of bias by race** as, in the hypotesis that certain race is commits more crimes, the estimation will be biased to this race. Therefore, using machine learning for guiltiness estimation **is risky** and potentially racist.
+
+## FUTURE WORK
+
+-   Normalize the dataset by census (out of the scope of this work)
+
+-   Study where the crimes happens
