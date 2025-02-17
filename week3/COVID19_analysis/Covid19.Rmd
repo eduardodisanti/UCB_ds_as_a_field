@@ -36,7 +36,7 @@ Files are:
 
 -   **US deaths:** "time_series_covid19_deaths_US.csv"
 
--   **Global heaths**: "time_series_covid19_deaths_global.csv"
+-   **Global deaths**: "time_series_covid19_deaths_global.csv"
 
 -   ** Global population**: "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
 ### Data loading
@@ -158,3 +158,4 @@ global %>%
   head(10) %>%
   kableExtra::kable("html") %>%
   kableExtra::kable_styling("striped", full_width = FALSE)
+```
