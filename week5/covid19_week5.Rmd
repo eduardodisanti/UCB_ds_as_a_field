@@ -23,6 +23,8 @@ suppressPackageStartupMessages({
     library(minpack.lm)  # For nonlinear least squares fitting
     library(broom)
     library(zoo)
+    library(caret)
+    library(xgboost)
 })
 ```
 
@@ -38,8 +40,6 @@ Files are:
 -   **Global confirmed cases** "time_series_covid19_confirmed_global.csv"
 
 -   **Global deaths**: "time_series_covid19_deaths_global.csv"
-
--   **US confirmed cases:** "time_series_covid19_confirmed_US.csv"
 
 -   **Global population**: "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
 ### Data loading
@@ -160,13 +160,7 @@ global <- global %>%
 
 ```{r data_compute_spread_rate, echo=FALSE, warning=FALSE}
 
-final_cases_per_country <- filtered_global %>%
-  filter(date == max(date)) %>%
-  group_by(Country_Region) %>%
-  summarize(final_cases = sum(cases, na.rm = TRUE)) %>%
-  ungroup()
-
-# Step 2: Compute Monthly Cases Per Country
+# Compute Monthly Cases Per Country
 monthly_cases <- filtered_global %>%
   mutate(month = floor_date(date, "month")) %>%
   group_by(Country_Region, month) %>%
@@ -174,29 +168,38 @@ monthly_cases <- filtered_global %>%
   arrange(Country_Region, month) %>%
   ungroup()
 
-# Step 3: Compute Previous Month Cases for Virulence Ratio
-monthly_cases_lagged <- monthly_cases %>%
-  group_by(Country_Region) %>%
-  mutate(prev_month_cases = lag(monthly_cases)) %>%  # Shifted cases for previous month
-  mutate(prev_month_cases = ifelse(is.na(prev_month_cases) | prev_month_cases == 0, 1, prev_month_cases)) %>% 
+# Compute Monthly Deaths Per Country
+monthly_deaths <- global_deaths %>%
+  mutate(month = floor_date(date, "month")) %>%
+  group_by(Country_Region, month) %>%
+  summarize(monthly_deaths = sum(deaths, na.rm = TRUE)) %>%
+  arrange(Country_Region, month) %>%
   ungroup()
 
-# Step 4: Compute Virulence Ratio (Relative Monthly Spread Speed)
+# Compute Previous Month Cases for Virulence Ratio
+monthly_cases_lagged <- monthly_cases %>%
+  group_by(Country_Region) %>%
+  mutate(prev_month_cases = lag(monthly_cases)) %>%
+  mutate(prev_month_cases = ifelse(is.na(prev_month_cases) | prev_month_cases == 0, 1, prev_month_cases)) %>%
+  ungroup()
+
+# Compute Virulence Ratio (Normalized by Previous Cases)
 spread_trajectory <- monthly_cases_lagged %>%
-  left_join(final_cases_per_country, by = "Country_Region") %>%
-  mutate(virulence_ratio = (monthly_cases - prev_month_cases) / prev_month_cases) %>%
-  mutate(virulence_ratio = ifelse(is.infinite(virulence_ratio) | is.nan(virulence_ratio), NA, virulence_ratio)) %>%
-  mutate(virulence_ratio = ifelse(virulence_ratio > 1, 1, virulence_ratio)) %>%  # Cap at 1 if necessary
-  filter(!is.na(virulence_ratio)) 
+  left_join(monthly_deaths, by = c("Country_Region", "month")) %>%
+  left_join(population_data, by = "Country_Region") %>% 
+  mutate(
+    virulence_ratio = (monthly_cases - prev_month_cases) / prev_month_cases,  # Normalized by previous cases
+    deaths_per_million = (monthly_deaths / Population) * 1e6  # Normalize deaths by population
+  ) %>%
+  mutate(
+    virulence_ratio = ifelse(is.infinite(virulence_ratio) | is.nan(virulence_ratio), NA, virulence_ratio),
+    deaths_per_million = ifelse(is.infinite(deaths_per_million) | is.nan(deaths_per_million), NA, deaths_per_million)
+  ) %>%
+  filter(!is.na(virulence_ratio) & !is.na(deaths_per_million))  # Remove NA values
 
-# Step 5: Ensure No Infinite or NaN Values
+# Remove outliers
 spread_trajectory <- spread_trajectory %>%
-  mutate(virulence_ratio = ifelse(is.infinite(virulence_ratio) | is.nan(virulence_ratio), NA, virulence_ratio))
-
-spread_trajectory <- spread_trajectory %>%
-  left_join(population_data, by = "Country_Region") %>%  # Ensure population data is present
-  mutate(infected_percentage = (monthly_cases / Population) * 1e6)  # Normalize by population
-
+  filter(virulence_ratio >= -1 & virulence_ratio <= 1)  # Keeping virulence within reasonable bounds
 
 ```
 
@@ -207,27 +210,27 @@ spread_trajectory <- spread_trajectory %>%
 
 top_countries <- spread_trajectory %>%
   group_by(Country_Region) %>%
-  summarize(total_infected_per_million = sum(infected_percentage, na.rm = TRUE)) %>%
-  arrange(desc(total_infected_per_million)) %>%  # Sort by highest normalized infections
-  slice_head(n = 10)  
+  summarize(total_cases_per_million = sum((monthly_cases / Population) * 1e6, na.rm = TRUE)) %>%
+  arrange(desc(total_cases_per_million)) %>%  # Sort by highest normalized infections
+  slice_head(n = 10)  # Select top 10
 
-# Step 2: Ensure Only These Top 10 Countries Are Used for Processing
+# Ensure Only These Top 10 Countries Are Used for Processing
 filtered_spread <- spread_trajectory %>%
   filter(Country_Region %in% top_countries$Country_Region) %>%  # Apply the filter
   arrange(Country_Region, month)  # Ensure chronological order
 
-# Step 3: Apply a 3-Month Moving Average for Smoothing
+# Apply a 3-Month Moving Average for Smoothing
 filtered_spread <- filtered_spread %>%
   group_by(Country_Region) %>%
   mutate(virulence_ratio_smooth = rollmean(virulence_ratio, k = 3, fill = NA, align = "right")) %>%
   ungroup()
 
-# Step 4: Plot the Smoothed Virulence Ratio for Top 10 Countries
- p<- ggplot(filtered_spread, aes(x = month, y = virulence_ratio_smooth, 
-                            color = Country_Region, group = Country_Region)) +
+# Plot the Smoothed Virulence Ratio for Top 10 Countries
+p <- ggplot(filtered_spread, aes(x = month, y = virulence_ratio_smooth, 
+                                 color = Country_Region, group = Country_Region)) +
   geom_line(size = 1) +
   scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
-  scale_color_brewer(palette = "Paired") +  # Better color differentiation
+  scale_color_brewer(palette = "Set1") +  # Better color differentiation
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
   labs(title = "Top 10 Countries: Smoothed Virulence Ratio Over Time",
@@ -240,32 +243,171 @@ print(p)
 
 #### PLOT THE DEATHS TRAJECTORY FOR THE TOP 10 COUNTRIES 
 ```{r analysis_of_virulency_and_deaths_correlation, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=8, }
-  library(plotly)
+  
+# Compute Death-to-Case Ratio
+spread_with_deaths <- spread_trajectory %>%
+  mutate(death_rate = monthly_deaths / monthly_cases) %>%  # Death rate per month
+  select(Country_Region, month, monthly_cases, monthly_deaths, death_rate) %>%
+  arrange(Country_Region, month)
 
-  spread_with_deaths <- spread_trajectory %>%
-     left_join(global, by = c("Country_Region" = "Country_Region", "month" = "date")) %>%
-  select(Country_Region, month, virulence_ratio, deaths) 
-  
-  top_10_countries <- top_countries$Country_Region 
-  filtered_data <- spread_with_deaths %>%
-    filter(Country_Region %in% top_10_countries)
-  
-p <- ggplot(filtered_data, aes(x = month, y = deaths, color = virulence_ratio)) +
+# Compute Monthly New Deaths
+spread_with_deaths <- spread_with_deaths %>%
+  group_by(Country_Region) %>%
+  arrange(month) %>%  
+  mutate(new_deaths = monthly_deaths - lag(monthly_deaths, default = 0)) %>%  
+  ungroup()
+
+# Select Top 10 Countries
+top_10_countries <- top_countries$Country_Region  
+filtered_data <- spread_with_deaths %>%
+  filter(Country_Region %in% top_10_countries)  
+
+# Plot the Death-to-Case Ratio Over Time
+p <- ggplot(filtered_data, aes(x = month, y = death_rate, color = new_deaths)) +
   geom_point(size = 3, alpha = 0.8) +  # Scatter points
-  scale_color_viridis_c() +  # Better color differentiation
-  facet_wrap(~ Country_Region, scales = "free") +  # Create small multiples for each country
+  scale_color_distiller(palette = "Reds", direction = 1) +  # Color scale for deaths
+  facet_wrap(~ Country_Region, scales = "free") +  # One plot per country
   theme_minimal() +
-  labs(title = "Virulence vs. Deaths Over Time (Faceted by Country)",
+  labs(title = "Deaths per Case Ratio Over Time (Faceted by Country)",
        x = "Month",
-       y = "Total Deaths",
-       color = "Virulence Ratio") +
+       y = "Deaths per Case Ratio",
+       color = "New Deaths") +
   theme(legend.position = "right",
         axis.text.x = element_text(angle = 90, hjust = 1))
 
-# Convert to an interactive Plotly plot
-ggplotly(p)
+# Display Plot
+print(p)
 ```
 
+### MODELIZATION ###
+
+```{r modeling, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=8, }
+
+  # Prepare the dataset for training
+  model_data <- spread_with_deaths %>%
+    select(Country_Region, month, monthly_cases, monthly_deaths) %>%
+    drop_na()
+  
+  # Scale the features using Min-Max Scaling
+  numeric_features <- model_data %>% select(monthly_cases, monthly_deaths)
+  
+  preproc <- preProcess(numeric_features, method = c("range"))  
+  scaled_features <- predict(preproc, numeric_features)
+  
+  # Add scaled features back into model_data
+  model_data <- model_data %>%
+    mutate(monthly_cases_scaled = scaled_features$monthly_cases,
+           monthly_deaths_scaled = scaled_features$monthly_deaths) %>%
+    select(-monthly_cases, -monthly_deaths)  # Drop original features
   
   
+  xgb_data <- xgb.DMatrix(
+    data = as.matrix(model_data %>% select(monthly_cases_scaled)), 
+    label = model_data$monthly_deaths_scaled
+  )
   
+  # Parameters for XGBoost
+  xgb_params <- params <- list(
+      objective = "reg:squarederror",  # Regression task
+      eval_metric = "rmse",  # Root Mean Square Error
+      eta = 0.05,  # Learning rate
+      max_depth = 8,  # Complexity control
+      min_child_weight = 3,  # Prevents overfitting
+      subsample = 0.8,  # Uses 80% of data per tree
+      colsample_bytree = 0.8,  # Uses 80% of features per tree
+      lambda = 1,  # L2 regularization
+      alpha = 0.5  # L1 regularization
+    )
+
+  # Train
+  xgb_model <- xgboost(
+    params = xgb_params, 
+    data = xgb_data, 
+    nrounds = 100, 
+    verbose = FALSE
+  )
+  
+  # Run predictions
+  model_data <- model_data %>%
+    mutate(predicted_deaths_scaled = predict(xgb_model, xgb_data))
+  
+  model_data <- model_data %>%
+    mutate(predicted_deaths = predicted_deaths_scaled * (max(numeric_features$monthly_deaths) - min(numeric_features$monthly_deaths)) + min(numeric_features$monthly_deaths))
+  
+  # Filter only the Top 10 Countries
+filtered_predictions <- filtered_predictions %>%
+  mutate(actual_deaths = monthly_deaths_scaled * (max(numeric_features$monthly_deaths) - min(numeric_features$monthly_deaths)) + min(numeric_features$monthly_deaths))
+
+# Plot actual vs predicted deaths for the 10 top countries
+pp <- ggplot(filtered_predictions, aes(x = month)) +
+  geom_point(aes(y = actual_deaths, color = "Actual"), size = 2, alpha = 0.7) + 
+  geom_line(aes(y = predicted_deaths, color = "Predicted"), size = 1) +
+  scale_color_manual(values = c("Actual" = "red", "Predicted" = "blue")) +
+  facet_wrap(~ Country_Region, scales = "free") +  # Separate plots per country
+  theme_minimal() +
+  labs(title = "XGBoost Model: Predicted vs. Actual Deaths (Top 10 Countries)",
+       x = "Month",
+       y = "Monthly Deaths",
+       color = "Legend") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+print(pp)
+```  
+
+
+
+```{r model_evaluation, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=8, }
+
+
+  model_data <- model_data %>%
+    mutate(monthly_deaths = monthly_deaths_scaled * 
+             (max(spread_with_deaths$monthly_deaths, na.rm = TRUE) - min(spread_with_deaths$monthly_deaths, na.rm = TRUE)) + 
+             min(spread_with_deaths$monthly_deaths, na.rm = TRUE))
+
+    errors <- model_data$predicted_deaths - model_data$monthly_deaths
+
+    # Create residuals Histogram (Linear Scale)
+    p1 <- ggplot(data.frame(errors), aes(x = errors)) +
+      geom_histogram(bins = 50, fill = "blue", alpha = 0.7, color = "black") +
+      geom_vline(aes(xintercept = mean(errors, na.rm = TRUE)), color = "red", linetype = "dashed", size = 1) +
+      labs(title = "Histogram of Prediction Errors (Linear Scale)",
+           x = "Prediction Error (Predicted - Actual)",
+           y = "Frequency") +
+      theme_minimal()
+    
+    # Create residuals Histogram (Log Scale)
+    p2 <- ggplot(data.frame(errors), aes(x = errors)) +
+      geom_histogram(bins = 50, fill = "blue", alpha = 0.7, color = "black") +
+      geom_vline(aes(xintercept = mean(errors, na.rm = TRUE)), color = "red", linetype = "dashed", size = 1) +
+      scale_y_log10() +  # Apply log scale to y-axis
+      labs(title = "Histogram of Prediction Errors (Log Scale)",
+           x = "Prediction Error (Predicted - Actual)",
+           y = "Log(Frequency)") +
+      theme_minimal()
+    
+    p1 + p2
+```  
+  
+## POSSIBLE BIAS REPORT ##
+  
+### Data quality problems: ###
+#### Underreporting & Inconsistent Testing ###
+      - Many countries, especially in the early stages of the pandemic, had limited testing capacity, therefore, monthly cases may be underreported, which directly affects the virulence ratio calculation.
+      - Death Reporting Differences: Some countries reported only confirmed COVID-19 deaths, while others included probable cases. This discrepancy can skew the new deaths/monthly cases ratio.
+
+#### Population Normalization Bias ####
+	  - Scaling by Total Population: Normalizing infections or deaths by total country population assumes uniform exposure.
+
+#### Population Normalization Bias ####
+    - Virulence Ratio Calculation
+    - Instability at Low Cases: When monthly cases are small, the virulence ratio (new cases/previous cases) can be highly volatile. This may cause extreme fluctuations, especially in early months.
+    - Artificial Capping: If the virulence ratio is arbitrarily capped at 1 (as done in some code versions), it removes important distinctions between rapidly spreading outbreaks.
+
+
+#### Choice of Top 10 Countries ####
+    - If countries are selected based on total infections per million, it favors smaller nations with concentrated outbreaks (e.g., Andorra, San Marino).
+    - A better approach might consider infection trajectories (e.g., peak growth rate) instead of just final case counts.
+
+#### Correlation Between Virulence and Deaths ####
+    - Deaths Lag Behind Cases: Since fatalities occur weeks after infection, directly correlating same-month virulence ratio and deaths may underestimate the relationship.
+    - Alternative Approach: Compute lagged correlations, checking if previous months’ cases predict future deaths.
