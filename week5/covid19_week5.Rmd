@@ -119,8 +119,8 @@ US_cases <- US_cases %>% filter(cases>0)
 
 ```
 
-#### JOIN WITH POPULATION TO SCALE POPULATION PER MILLION 
-```{r data_pre_processing_merge, echo=FALSE, warning=FALSE}
+#### COMPUTE INFECTED PER MILLION
+```{r data_compute_infected_per_million, echo=FALSE, warning=FALSE}
 
 # Normalize global cases by population percentage
 
@@ -131,13 +131,6 @@ global <- global %>%
   left_join(population_data, by = c("Country_Region", "Province_State")) %>%
   mutate(infected_percentage = (cases / Population) * 1e6)
 global <- global %>%
-  mutate(date = as.Date(date, tryFormats = c("%Y-%m-%d", "%m/%d/%Y", "%d-%m-%Y")))
-
-# Normalize US cases by population percentage
-US <- US_cases %>%
-  left_join(population_data, by = c("Country_Region", "Province_State", "Admin2")) %>%
-  mutate(infected_percentage = (cases/ Population) * 1e6)
-US <- US %>%
   mutate(date = as.Date(date, tryFormats = c("%Y-%m-%d", "%m/%d/%Y", "%d-%m-%Y")))
 
 # Filter data
@@ -152,13 +145,12 @@ global <- global %>%
 
 ```
 
-
 ### INSIGHTS
 #### COMPUTE THE VIRULENCY OF THE COVID-19 BY THE SPREAD RATE
 
 \text{Spread Rate} = \frac{\text{Final Cases}}{\text{Average Cases Per Month}}
 
-```{r data_compute_spread_rate, echo=FALSE, warning=FALSE}
+```{r prepare_metrics_joins, echo=FALSE, warning=FALSE}
 
 # Compute Monthly Cases Per Country
 monthly_cases <- filtered_global %>%
@@ -206,7 +198,7 @@ spread_trajectory <- spread_trajectory %>%
 
 
 #### VISUALIZE VIRUS SPREAD TRAJECTORIES
-```{r data_pre_processing_merge, echo=FALSE, warning=FALSE, fig.width=14, fig.height=6, }
+```{r insight_on_confirmed_cases, echo=FALSE, warning=FALSE, fig.width=14, fig.height=6, }
 
 top_countries <- spread_trajectory %>%
   group_by(Country_Region) %>%
@@ -333,6 +325,10 @@ print(p)
   
   model_data <- model_data %>%
     mutate(predicted_deaths = predicted_deaths_scaled * (max(numeric_features$monthly_deaths) - min(numeric_features$monthly_deaths)) + min(numeric_features$monthly_deaths))
+
+  # Filter the predictions to show only the top_countries
+  filtered_predictions <- model_data %>%
+    filter(Country_Region %in% top_countries$Country_Region)
   
   # Filter only the Top 10 Countries
 filtered_predictions <- filtered_predictions %>%
