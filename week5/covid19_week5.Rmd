@@ -1,40 +1,75 @@
 ---
-title: "Covid19_data_anaysis"
-output: html_document
+title: "Covid19 data anaysis"
+output:
+  pdf_document: default
+  html_document: default
 date: "`r Sys.Date()`"
 ---
 
 ```{r setup, include=FALSE}
 # Set default options to hide warnings, messages, and excessive output
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
- 
-# Load libraries
+
+# Define required packages
+required_packages <- c(
+    "readr", "stringr", "tidyverse", "lubridate", "kableExtra", "plotly",
+    "dplyr", "scales", "patchwork", "minpack.lm", "broom", "zoo", 
+    "caret", "xgboost"
+)
+
+# Function to install missing packages
+install_if_missing <- function(pkg) {
+  if (!requireNamespace(pkg, quietly = TRUE)) {
+    install.packages(pkg, dependencies = TRUE)
+  }
+}
+
+# Install missing packages
+invisible(lapply(required_packages, install_if_missing))
+
+# Load all required packages
 suppressPackageStartupMessages({
-    library(readr)
-    library(stringr)
-    library(tidyverse)
-    library(lubridate)
-    library(kableExtra)
-    library(plotly)
-    library(dplyr)
-    library(lubridate)
-    library(scales)
-    library(patchwork)
-    library(minpack.lm)  # For nonlinear least squares fitting
-    library(broom)
-    library(zoo)
-    library(caret)
-    library(xgboost)
+    lapply(required_packages, library, character.only = TRUE)
 })
+
+# Confirmation message
+cat("✅ All required packages installed and loaded successfully.\n")
 ```
 
 ## COVID analysis
 
-This document describes the work done on COVID cases dataset for CU Boulder MDS 2025
+This document describes the work done on COVID cases dataset for CU Boulder MDS 2025.
 
-### Datasources
+### 0. Structure of the document
+- **Introduction**
+- **Research Question**
+- **Methodology Description**
+- **Methodology Implementation**
+- **Conclusions**
+- **Bias Report**
 
-Data comes from following repository: "<https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/>"
+
+### 1. Introduction
+COVID pandemic was a global challenge that put to the test the scientific community around the world.
+Although is not the first pandemic in the world, the globalization made the population to move around the globe several times a day, helping the propagation of viruses and increasing mutation of the virus, making it more problematic to fight.
+Is not the first time that there are curfews, quarentines and not even the first time the humanity developed a vaccine in record time.
+During this pandemic more tan 700 million people got infected with 7 million dead worldwide. "<https://www.worldometers.info/coronavirus/>"
+This is mortality rate of 1% (reported), bigger than Seasonal Influenza (flu) which is 0.1%, which is around 500.000 dead depending on the season.
+Even being a tragedy, our perception is that COVID was extremely dangerous and most infected people died, this 1% looks small. Therefore, the question arises, how deadly was the COVID-19.
+
+### 2. Research question
+To address this question, a more formal one need to be stated in order to perform a quantitative research:
+"Is the infection rate, meaning, the speed of virus spread (virosity), a good estimator of death rate?"
+
+### 3. Methodology description
+- Analyze the evolution of quantity of cases (trajectory) per country around the world
+- Correlate this trajectory with the quantity of deaths per country.
+- Data will be normalized by population
+- Create a model to estimate the number of deaths based on number of cases.
+
+### 4. Methodology implementation
+#### Datasources
+<br>Data comes from following repository: "<https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/>"
 
 Files are:
 -   **Global confirmed cases** "time_series_covid19_confirmed_global.csv"
@@ -42,8 +77,10 @@ Files are:
 -   **Global deaths**: "time_series_covid19_deaths_global.csv"
 
 -   **Global population**: "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
-### Data loading
-
+#### Data loading
+- Defines the external data sources used for the analysis.
+- Loads worldwide COVID-19 case and death data from an online repository.
+- Reads population data to allow comparisons between countries.
 ```{r data_source, echo=FALSE, warning=FALSE}
 url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
 
@@ -74,9 +111,11 @@ population_data <- population_data %>%
          Admin2, Population)
 ```
 
-### DATA PRE-PROCESSING
+##### DATA PRE-PROCESSING
 
-#### Convert from wide to long format
+###### Convert from wide to long format
+- Converts data from a format where each day is a separate column into a format where each row represents a date.
+- Ensures that cases and deaths are structured correctly for analysis.
 ```{r data_pre_processing_convert, echo=FALSE, warning=FALSE}
 
 # GLOBAL CASES
@@ -119,7 +158,9 @@ US_cases <- US_cases %>% filter(cases>0)
 
 ```
 
-#### COMPUTE INFECTED PER MILLION
+##### COMPUTE INFECTED PER MILLION
+- Joins COVID case and death data with population data to calculate how many people per million were infected in each country.
+- Filters out missing values to keep only reliable data.
 ```{r data_compute_infected_per_million, echo=FALSE, warning=FALSE}
 
 # Normalize global cases by population percentage
@@ -145,10 +186,15 @@ global <- global %>%
 
 ```
 
-### INSIGHTS
-#### COMPUTE THE VIRULENCY OF THE COVID-19 BY THE SPREAD RATE
-
-\text{Spread Rate} = \frac{\text{Final Cases}}{\text{Average Cases Per Month}}
+#### INSIGHTS
+- Defines a formula to measure how fast the virus spreads over time.
+  $$ \text{Spread Rate} = \frac{\text{Final Cases}}{\text{Average Cases Per Month}} $$
+- Calculates the total number of cases per country and the average number of cases per month.
+**Computing Monthly Cases and Deaths**
+- Groups cases and deaths by month instead of daily counts. This helps smooth out daily fluctuations and provides a clearer trend.
+- Computing Virulence Ratio
+--  Compares the number of cases each month to the previous month to measure how fast the infection rate is changing.
+--  Normalizes this ratio to avoid extreme values that might distort the analysis.
 
 ```{r prepare_metrics_joins, echo=FALSE, warning=FALSE}
 
@@ -196,8 +242,11 @@ spread_trajectory <- spread_trajectory %>%
 ```
 
 
+##### VISUALIZE VIRUS SPREAD TRAJECTORIES
+- Selects the 10 most affected countries based on total cases per million.
+- Creates a smoothed trend line to show how quickly the virus spread in these top 10 countries.
 
-#### VISUALIZE VIRUS SPREAD TRAJECTORIES
+
 ```{r insight_on_confirmed_cases, echo=FALSE, warning=FALSE, fig.width=14, fig.height=6, }
 
 top_countries <- spread_trajectory %>%
@@ -233,7 +282,12 @@ p <- ggplot(filtered_spread, aes(x = month, y = virulence_ratio_smooth,
 print(p)
 ```
 
-#### PLOT THE DEATHS TRAJECTORY FOR THE TOP 10 COUNTRIES 
+##### PLOT THE DEATHS TRAJECTORY FOR THE TOP 10 COUNTRIES 
+- Computes the ratio of deaths to cases over time.
+- Colors the points based on the number of deaths per month.
+- Uses separate small charts (facets) for each country to make comparisons easier.
+
+
 ```{r analysis_of_virulency_and_deaths_correlation, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=8, }
   
 # Compute Death-to-Case Ratio
@@ -269,9 +323,19 @@ p <- ggplot(filtered_data, aes(x = month, y = death_rate, color = new_deaths)) +
 
 # Display Plot
 print(p)
+
 ```
 
-### MODELIZATION ###
+
+#### MODELIZATION 
+
+- Prepares the data for machine learning by normalizing values.
+- Trains an XGBoost model (a powerful predictive algorithm) to estimate deaths based on new cases.
+- Predicts deaths for each country and compares them to actual recorded deaths.
+- Shows the top ten countries to observe the model behavior.
+
+For solving the clear not linear correlation between deaths and virulence, an **XGBoost** algorithm will be used to allow different countries to be modeled differently (taking advantage of how decision trees work).
+
 
 ```{r modeling, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=8, }
 
@@ -350,6 +414,11 @@ pp <- ggplot(filtered_predictions, aes(x = month)) +
 print(pp)
 ```  
 
+##### MODEL EVALUATION
+
+- Calculates the difference (error) between predicted and actual deaths.
+- Creates histograms to visualize how well the model performed.
+- One histogram shows errors in normal scale, while the other shows errors using a log scale to highlight small deviations.
 
 
 ```{r model_evaluation, echo=FALSE, message=FALSE, warning=FALSE, fig.width=14, fig.height=8, }
@@ -384,26 +453,25 @@ print(pp)
     p1 + p2
 ```  
   
-## POSSIBLE BIAS REPORT ##
-  
-### Data quality problems: ###
-#### Underreporting & Inconsistent Testing ###
-      - Many countries, especially in the early stages of the pandemic, had limited testing capacity, therefore, monthly cases may be underreported, which directly affects the virulence ratio calculation.
-      - Death Reporting Differences: Some countries reported only confirmed COVID-19 deaths, while others included probable cases. This discrepancy can skew the new deaths/monthly cases ratio.
+### 5. CONCLUSION
 
-#### Population Normalization Bias ####
-	  - Scaling by Total Population: Normalizing infections or deaths by total country population assumes uniform exposure.
+This study analyzed the relationship between COVID-19 infection rates and mortality rates across different countries. By leveraging global datasets on confirmed cases, deaths, and population sizes, we investigated whether the speed of viral spread (virulence) serves as a reliable predictor of mortality.
 
-#### Population Normalization Bias ####
-    - Virulence Ratio Calculation
-    - Instability at Low Cases: When monthly cases are small, the virulence ratio (new cases/previous cases) can be highly volatile. This may cause extreme fluctuations, especially in early months.
-    - Artificial Capping: If the virulence ratio is arbitrarily capped at 1 (as done in some code versions), it removes important distinctions between rapidly spreading outbreaks.
+#### Key Findings
 
+1. Virus Spread and Mortality:  
+   - The infection trajectory varied significantly across countries, with some experiencing rapid early outbreaks, while others showed slower but sustained case increases.
+   - The correlation between infection rate and deaths was not linear, highlighting the complexity of pandemic dynamics.
 
-#### Choice of Top 10 Countries ####
-    - If countries are selected based on total infections per million, it favors smaller nations with concentrated outbreaks (e.g., Andorra, San Marino).
-    - A better approach might consider infection trajectories (e.g., peak growth rate) instead of just final case counts.
+2. Machine Learning Model:  
+   - An XGBoost model was trained to predict monthly deaths based on the number of new cases.
+   - The model performed well for some countries, capturing trends accurately, but struggled with others, indicating that additional factors (e.g., healthcare infrastructure, policy interventions) influence outcomes.
 
-#### Correlation Between Virulence and Deaths ####
-    - Deaths Lag Behind Cases: Since fatalities occur weeks after infection, directly correlating same-month virulence ratio and deaths may underestimate the relationship.
-    - Alternative Approach: Compute lagged correlations, checking if previous months’ cases predict future deaths.
+3. Model Limitations & Biases:  
+   - Data Quality Issues: Some countries underreported cases and deaths due to limited testing or political reasons.
+   - Normalization Challenges: Adjusting deaths per million people assumes uniform exposure, which might not always hold.
+   - Time Lag Effect: The direct correlation between new cases and deaths might be misleading, as fatalities typically lag infections by several weeks.
+
+#### Final Thoughts  
+
+While the study provides insights into COVID-19 spread and mortality, further refinements—such as incorporating time-lagged features and healthcare-related variables—could improve predictive accuracy. Future research should explore alternative modeling techniques and validate results using additional epidemiological data.
