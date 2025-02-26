@@ -165,7 +165,7 @@ shootings_per_time$DAY_OF_WEEK <- factor(shootings_per_time$DAY_OF_WEEK,
 
 ### PLOT THE DISTRUBUTION PER WEEK DAY TO UNDERSTAND IF ITS SOME PATTERN THERE
 
-```{r plot_weekday_distribution_trajectory, echo=FALSE, fig.align='center', fig.width=6, fig.height=4}
+```{r plot_weekday_distribution_trajectory, echo=FALSE, fig.align='center', fig.width=10, fig.height=4}
 scatter_plot <- ggplot(shootings_per_weekday, aes(x = DAY_OF_WEEK, y = shooting_count)) +
   geom_point(color = "blue", size = 4, alpha = 1) +  # Scatter points
   labs(title = "Shootings by Day of the Week in NYC",
@@ -208,7 +208,7 @@ Hypothesis: Most of the shootings happens because of nightlife, to test it I'll:
 
 \
 
-```{r plot_preccint_distribution_trajectory, echo=FALSE, fig.align='center', fig.width=6, fig.height=4}
+```{r plot_preccint_distribution_trajectory, echo=FALSE, fig.align='center', fig.width=8, fig.height=4}
   ggplot(shootings_per_time, aes(x = DAY_OF_WEEK, y = HOUR, size = shooting_count, color = shooting_count)) +
     geom_point(alpha = 0.9) +
     scale_size(range = c(2, 12)) +
@@ -306,7 +306,7 @@ vip(corrected_model)
 
 ### CHECK PERPETRATOR RACE SHOOTINGS DISTRIBUTION
 
-```{r explain_bias_by_race_distribution, echo=FALSE, fig.align='center', fig.width=6, fig.height=4}
+```{r explain_bias_by_race_distribution, echo=FALSE, fig.align='center', fig.width=8, fig.height=4}
 ### AGGREGATE BY PERPETRATOR RACE WHEN ITS KNOW (NOT NA) ###
 shootings_by_perpetrator_race <- nypd_shootings %>%
   filter(!is.na(PERP_RACE)) %>%
@@ -326,7 +326,7 @@ ggplot(shootings_by_perpetrator_race, aes(x = reorder(factor(PERP_RACE), shootin
 
 #### FINALLY LETS BRIEFLY ANALYZE THE RELATIONSHIP BETWEEN PERPETRATOR RACE AND VICTIM RACE
 
-```{r race_to_race_shootings, echo=FALSE, fig.align='center', fig.width=6, fig.height=4}
+```{r race_to_race_shootings, echo=FALSE, fig.align='center', fig.width=8, fig.height=4}
 shootings_by_race <- nypd_shootings %>%
   filter(!is.na(PERP_RACE) & !is.na(VIC_RACE)) %>%  # Remove NA values
   group_by(PERP_RACE, VIC_RACE) %>%
