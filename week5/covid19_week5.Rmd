@@ -9,6 +9,7 @@ date: "`r Sys.Date()`"
 ```{r setup, include=FALSE}
 # Set default options to hide warnings, messages, and excessive output
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+options(repos = c(CRAN = "https://cloud.r-project.org"))
 
 # Define required packages
 required_packages <- c(
@@ -17,19 +18,17 @@ required_packages <- c(
     "caret", "xgboost"
 )
 
-# Function to install missing packages
-install_if_missing <- function(pkg) {
-  if (!requireNamespace(pkg, quietly = TRUE)) {
-    install.packages(pkg, dependencies = TRUE)
-  }
-}
+# Identify missing packages
+missing_packages <- required_packages[!(required_packages %in% installed.packages()[,"Package"])]
 
-# Install missing packages
-invisible(lapply(required_packages, install_if_missing))
+# Install missing packages (only if necessary)
+if (length(missing_packages) > 0) {
+    suppressMessages(install.packages(missing_packages, dependencies = TRUE))
+}
 
 # Load all required packages
 suppressPackageStartupMessages({
-    lapply(required_packages, library, character.only = TRUE)
+    lapply(required_packages, require, character.only = TRUE)
 })
 
 # Confirmation message
